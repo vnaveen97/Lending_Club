@@ -1,0 +1,68 @@
+---
+title: "Lending_club"
+author: "Naveen"
+date: "10/10/2020"
+output: html_document
+---
+Loading the required packages
+
+```{r loading required packages}
+packs = c('dplyr','ggplot2', 'caret','corrplot', 'e1071','readr')
+lapply(packs,require,character.only=TRUE)
+```
+
+
+
+```{r dataset, message = FALSE}
+dataset = read_csv('LoanStats3a_updated.csv')
+#View(dataset)
+```
+
+
+```{r}
+Y       = select(dataset,Approved) %>% unlist()
+X       = select(dataset,-Approved)
+```
+
+```{r}
+print(str(X))
+
+sapply(X,function(x){ length(unique(x)) })
+
+```
+
+term, grade, sub_grade, home_ownership, verification_status, loan_status, pymnt_plan, purpose, addr_state,
+
+
+```{r}
+ggplot_missing <- function(x){
+    if(!require(reshape2)){warning('you need to install reshape2')}
+    require(reshape2)
+    require(ggplot2)
+    #### This function produces a plot of the missing data pattern
+    #### in x.  It is a modified version of a function in the 'neato' package
+  
+  x %>% 
+    is.na %>%
+    melt %>%
+    ggplot(data = .,
+           aes(x = Var2,
+               y = Var1)) +
+    geom_raster(aes(fill = value)) +
+    scale_fill_grey(name = "",
+                    labels = c("Present","Missing")) +
+    theme_minimal() + 
+    theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + 
+    labs(x = "Variables in Dataset",
+         y = "Rows / observations")
+}
+ggplot_missing(X)
+```
+
+```{r, cache=TRUE}
+X = select(X, -emp_title,-desc,-title,-earliest_cr_line,-last_pymnt_d,-last_credit_pull_d,-next_pymnt_d)
+require(RANN)
+XimputeMedian = preProcess(X, method = 'medianImpute', k = 5)
+Ximpute       = predict(XimputeMedian,X)
+anyNA(Ximpute)
+```
