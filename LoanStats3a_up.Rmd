@@ -1,0 +1,329 @@
+---
+title: "Lending_club"
+author: "Naveen"
+date: "10/10/2020"
+output: html_document
+---
+Loading the required packages
+
+```{r packages, message=FALSE, warning=FALSE}
+packs = c('dplyr','ggplot2', 'caret','corrplot', 'e1071','readr','RANN', 'stringr', 'qdapRegex','bestNormalize', 'glmnet','pROC', 'xgboost')
+lapply(packs,require,character.only=TRUE)
+```
+
+
+```{r dataset, message=FALSE}
+dataset = read_csv('LoanStats3a.csv')
+set.seed(15)
+df2 <- dataset[sample(nrow(dataset)),]
+
+```
+
+
+```{r XY}
+Y        = select(df2,Approved) %>% unlist(.)
+
+X        = select(df2,-c(Approved,id,member_id,emp_title,url:addr_state,
+                 earliest_cr_line,issue_d,next_pymnt_d,last_credit_pull_d,last_pymnt_d,chargeoff_within_12_mths,collections_12_mths_ex_med))
+```
+
+
+
+term, grade, sub_grade, home_ownership, verification_status, loan_status, pymnt_plan, purpose, addr_state are the categorical variables found from the dataset.
+
+```{r}
+ggplot_missing <- function(x){
+    if(!require(reshape2)){warning('you need to install reshape2')}
+    require(reshape2)
+    require(ggplot2)
+    #### This function produces a plot of the missing data pattern
+    #### in x.  It is a modified version of a function in the 'neato' package
+  
+  x %>% 
+    is.na %>%
+    melt %>%
+    ggplot(data = .,
+           aes(x = Var2,
+               y = Var1)) +
+    geom_raster(aes(fill = value)) +
+    scale_fill_grey(name = "",
+                    labels = c("Present","Missing")) +
+    theme_minimal() + 
+    theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + 
+    labs(x = "Variables in Dataset",
+         y = "Rows / observations")
+}
+ggplot_missing(X)
+```
+Visual plot is not useful. Calculating the percentages of missing values for each feature.
+```{r, missing_percent, cache=TRUE}
+missingPercent = colMeans(is.na.data.frame(X))
+```
+
+Removing features which contain more than 60% of missing values
+
+```{r, cache=TRUE}
+X1 = select(X, -c(mths_since_last_delinq,mths_since_last_record,mths_since_last_major_derog,annual_inc_joint,dti_joint,
+                verification_status_joint,tot_coll_amt:bc_util,mo_sin_rcnt_rev_tl_op:percent_bc_gt_75,tot_hi_cred_lim:total_il_high_credit_limit,
+                initial_list_status,policy_code,application_type,mo_sin_old_rev_tl_op,mo_sin_old_il_acct))
+#head(X1)
+# X %>% filter(colMeans(is.na.data.frame(X)) )
+#XX = data.frame(X)[, which(colMeans(!is.na(data.frame(X))) > 0.6)]
+```
+
+Using regex functions splitting the number of months and string month from features
+
+
+```{r}
+X2 = X1 %>% mutate(term = sub(" m.*","",term), revol_util = sub("%","",revol_util), int_rate = sub("%","",int_rate))
+
+#Counting the number of unique values in each feature to see if there are any categorical features.
+
+print(str(X2))
+
+sapply(X2,function(x){ length(unique(x)) })
+
+```
+
+
+converting chr to integers
+
+```{r}
+X3 = X2 %>% mutate(term = as.numeric(term), int_rate = as.numeric(int_rate)/100, revol_util = as.numeric(revol_util)/100,
+                          emp_length = str_extract(emp_length, "[0-9]{1,2}")) %>% mutate(emp_length = as.numeric(emp_length))
+```
+
+Converting categorical to factors
+
+```{r}
+cat = c("grade", "sub_grade", "home_ownership", "verification_status", "loan_status", "pymnt_plan")
+
+X4        = mutate_at(X3,cat,as.factor)
+
+#converting factors to numerical inorder to scale. 
+#X5 =mutate_at(X4,cat,as.numeric)
+#head(X5)
+
+```
+
+```{r}
+dummyModel = dummyVars(~ ., data = X4, fullRank = TRUE)
+X5=predict(dummyModel,X4)
+#head(X5)
+anyNA(X5)
+
+```
+Checking for columns with NA values
+```{r}
+colnames(X5)[colSums(is.na(X5)) > 0]
+```
+Doing median imputation to fill NA values
+```{r}
+
+XimputeMedian = preProcess(X5, method = 'medianImpute')
+Ximpute       = predict(XimputeMedian,X5)
+
+
+anyNA(Ximpute)
+#head(Ximpute)
+
+```
+
+Yeo Johnson transformation for normalizing data
+```{r}
+#s=yeojohnson(Ximpute, eps = 0.001, standardize = TRUE)
+#X6=predict(s,Ximpute)
+#head(s)
+
+
+X7     = Ximpute %>%
+  preProcess(method  = c('center', 'scale', 'YeoJohnson')) %>%
+  predict(newdata    = Ximpute)
+
+```
+
+
+```{r}
+corrplot(cor(X7), tl.cex = 0.5)
+correlationmatrix<-cor(X7, method = "pearson", use = "pairwise.complete.obs")
+highlyCorrelated <- findCorrelation(correlationmatrix, cutoff=0.85, verbose=TRUE, names=TRUE)
+print(highlyCorrelated)
+```
+
+
+```{r}
+(highCorr = findCorrelation(cor(X7), .8, verbose=TRUE, names = TRUE))
+
+X7removedCorr = select(as.data.frame(X7), -c(total_pymnt,funded_amnt,total_pymnt_inv,out_prncp,funded_amnt_inv))
+
+dim(X7removedCorr)
+```
+
+```{r}
+set.seed(14)
+trainIndex = createDataPartition(Y, p = .75, list = FALSE) %>% as.vector(.)
+
+
+Xtrain = X7removedCorr[trainIndex,]
+Ytrain = Y[trainIndex] %>% as.factor(.)
+
+Xtest = X7removedCorr[-trainIndex,]
+Ytest = Y[-trainIndex] %>% as.factor(.)
+
+
+```
+
+```{r}
+set.seed(1)
+K            = 10
+trainControl = trainControl(method = "cv", number = K)
+tuneGrid     = expand.grid('alpha'=c(0,.25,.5,.75,1),'lambda' = seq(0.001, .1, length.out = 10))
+
+elasticOut = train(x = as.matrix(Xtrain), y = Ytrain,
+                   method = "glmnet", 
+                   
+                   trControl = trainControl, tuneGrid = tuneGrid)
+plot(elasticOut)
+elasticOut$bestTune
+
+```
+
+```{r}
+YhatTest  = predict(elasticOut, as.matrix(Xtest), s=elasticOut$bestTune$lambda, type = 'raw')
+```
+
+```{r}
+glmnetOut      = glmnet(x = as.matrix(Xtrain), y = Ytrain, alpha = elasticOut$bestTune$alpha, family = 'binomial')
+
+```
+
+
+```{r}
+betaHat  = coef(glmnetOut, s=elasticOut$bestTune$lambda)
+#betaHat
+
+```
+
+```{r}
+#accuracy
+error=mean(YhatTest==Ytest)
+error
+#mean
+
+```
+
+Accuracy is high because our dataset is highly imbalanced. 
+
+```{r}
+probHatTest = predict(elasticOut, Xtest, s=elasticOut$bestTune$lambda, type = 'prob')
+probHatTest
+rocOut = roc(response = Ytest, probHatTest$'0')
+plot(rocOut)
+table(YhatTest,Ytest)
+
+
+```
+Fixing class imbalance using xgboost model -kappa training
+```{r}
+trControl = trainControl(method = 'cv')
+tuneGrid = data.frame('nrounds'= seq(100,500,length.out = 10),
+                        'max_depth' = 2,
+                        'eta' = .01,
+                        'gamma' = 0,
+                        'colsample_bytree' = 1,
+                        'min_child_weight' = 0,
+                        'subsample' = .5)
+boostKappaOut   = train(x = Xtrain, y = Ytrain,
+                     method = "xgbTree", 
+                     tuneGrid = tuneGrid,
+                     metric = 'auc',
+                     trControl = trControl)
+
+```
+
+```{r}
+YhatKappa = relevel(factor(predict(boostKappaOut, Xtest)),ref='0') #reference rare event
+```
+
+```{r}
+tabk=table(YhatKappa,Ytest)
+tabk
+```
+//trying loss function modification using random forest
+```{r}
+lossF = function(tab, W = 3){
+  return(1 - 1/sum(tab[,1]) * tab[1,1]^2/(tab[1,1] + W*tab[1,2]))
+}
+```
+
+```{r}
+tuneGrid = data.frame('mtry' = 1:2,
+                      'splitrule' = 'gini',
+                      'min.node.size' = 1)
+
+rfOut   = train(x = Xtrain, y = Ytrain,
+                     method = "ranger", 
+                     tuneGrid = tuneGrid,
+                     metric = 'Kappa',
+                     trControl = trControl)
+YhatRf  = relevel(factor(predict(rfOut, Xtest)),ref='0')
+```
+
+```{r}
+tabRf    = table(YhatRf,Ytest)
+tabRf
+mean(YhatRf==Ytest)#accuracy
+```
+
+```{r}
+lossF(tabRf)
+lossF(tabk)
+```
+
+
+Downsampling the data to overcome class imbalance
+```{r}
+data_downsample <- downSample(Xtrain, Ytrain)
+nrow(data_downsample)
+head(data_downsample)
+
+xdtrain=select(data_downsample,-c(Class))
+Ydtrain       = select(data_downsample,Class) %>% unlist()
+Ydtrain       = as.factor(Ydtrain)
+```
+
+```{r}
+set.seed(1)
+K            = 2
+trainControl = trainControl(method = "cv", number = K)
+tuneGrid     = expand.grid('alpha'=c(0,.25,.5,.75,1),'lambda' = seq(0.001, .1, length.out = 10))
+
+elasticOut = train(x = as.matrix(xdtrain), y = Ydtrain,
+                   method = "glmnet", 
+                   
+                   trControl = trainControl, tuneGrid = tuneGrid)
+elasticOut$bestTune
+```
+
+```{r}
+YhatTest  = predict(elasticOut, Xtest, s=elasticOut$bestTune$lambda, type = 'raw')
+glmnetOut      = glmnet(x = as.matrix(xdtrain), y = Ydtrain, alpha = elasticOut$bestTune$alpha, family = 'binomial')
+
+```
+
+```{r}
+betaHat  = coef(glmnetOut, s=elasticOut$bestTune$lambda)
+#betaHat
+
+```
+
+```{r}
+error=mean(YhatTest==Ytest)
+error
+probHatTest = predict(elasticOut, Xtest, s=elasticOut$bestTune$lambda, type = 'prob')
+probHatTest
+rocOut = roc(response = Ytest, probHatTest$'0')
+plot(rocOut)
+table(YhatTest,Ytest)
+```
+
